@@ -17,6 +17,22 @@ st.markdown("""<style>
 .pill{display:inline-block;border-radius:6px;padding:4px 9px;font-weight:600;font-size:12px;margin-right:7px}.critical{color:#A0233A;background:#FCE7EB}.high{color:#925B0C;background:#FFF0CE}.normal{color:#176B58;background:#E2F3EB}.low{color:#355F8B;background:#E5EDF9}
 .client{white-space:pre-wrap;overflow-wrap:anywhere;border-left:3px solid #176B58;padding:12px 15px;border-radius:6px;background:#EDF3F1;font-size:14px}.muted{font-size:12px;color:#6D7B79}
 [data-testid="stMain"]{overflow-x:hidden}button{white-space:normal!important}
+html,body,[data-testid="stApp"]{font-family:"Segoe UI",sans-serif;color:#182F35}
+[data-testid="stSidebar"]{background:#F6FAFA;border-right:1px solid #DAE6E7}
+.brand{color:#0D6468;display:flex;align-items:center;gap:10px;font-size:25px;margin-bottom:7px}
+.brand-mark{display:grid;place-items:center;width:35px;height:35px;background:#0D6468;color:white;border-radius:11px;font-size:22px}
+.eyebrow{letter-spacing:.2px;font-size:12px;color:#52686F;margin-bottom:26px;padding-left:45px}
+[class*="st-key-nav_"] button{justify-content:flex-start;min-height:48px;padding:10px 15px;border:1px solid transparent;border-radius:9px;background:transparent;color:#40585F;gap:12px}
+[class*="st-key-nav_"] button:hover{background:#E7F0F1;border-color:#D3E4E5;color:#0D6468}
+[class*="st-key-nav_"] button[kind="primary"]{background:#DBEEED;color:#084E53;border-color:#DBEEED;border-left:4px solid #0D6B70;font-weight:700;padding-left:12px}
+[class*="st-key-nav_"] button>div>span{justify-content:flex-start;width:100%}
+button:focus-visible{outline:3px solid #137A82!important;outline-offset:3px!important}
+button p{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;line-height:1.35!important}
+[data-testid="stSidebarUserContent"]>div>[data-testid="stVerticalBlock"]{min-height:calc(100dvh - 150px)}
+[data-testid="stSidebarUserContent"] [data-testid="stLayoutWrapper"]:has(>.st-key-ai_indicator){margin-top:auto}
+.st-key-ai_indicator{border-top:1px solid #D9E6E7;padding-top:18px}
+.ai-status{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:600}.status-dot{width:8px;height:8px;border-radius:50%;background:#839597}.status-dot.ready{background:#15756A}.status-dot.error{background:#BA3E48}
+.basis{font-size:12px;line-height:1.5;background:#F2F7F7;border:1px solid #DDE9E9;padding:8px 11px;border-radius:8px;margin:7px 0;color:#40585F}.basis strong{color:#0D6468}
 @media(max-width:760px){.block-container{padding:3.6rem 1rem 1rem}h1{font-size:1.5rem!important}[data-testid="stMetric"]{padding:7px 10px}[data-testid="stMetricValue"]{font-size:1.35rem}.helper-note{display:none}}
 </style>""", unsafe_allow_html=True)
 
@@ -30,6 +46,12 @@ if "pending_nav" in st.session_state:
 if "pending_view" in st.session_state:
     st.session_state["view"] = st.session_state.pop("pending_view")
 st.session_state.setdefault("view", "queue")
+st.session_state.setdefault("nav", "Обращения")
+article_route = st.query_params.get("article")
+if article_route in {a["id"] for a in articles} and st.session_state.get("article_route") != article_route:
+    st.session_state["article_route"] = article_route
+    st.session_state["nav"] = "База знаний"
+    st.session_state["pending_kb"] = article_route
 st.session_state.setdefault("buffers", {})
 st.session_state.setdefault("intake_token", str(uuid.uuid4()))
 MODE = {"demo": "Без AI · локальные правила", "ai": "Ответ создан моделью", "fallback": "Ошибка AI · резервный режим", "pending": "Ожидает обработки", "manual": "Локальная обработка"}
@@ -58,30 +80,32 @@ def nav_changed():
 
 
 with st.sidebar:
-    st.markdown('<div class="brand">◉ SupportLens</div><div class="eyebrow">РАБОЧЕЕ МЕСТО ОПЕРАТОРА</div>', unsafe_allow_html=True)
-    section = st.radio("Раздел", ["Обращения", "База знаний", "Аналитика", "Подключение AI"], key="nav", on_change=nav_changed, label_visibility="collapsed")
-    st.divider()
-    label = {"not_configured": "AI не настроен", "unverified": "AI · подключение не проверено", "ready": "Модель успешно ответила", "error": "AI · ошибка последнего запроса"}[ai["state"]]
-    (st.success if ai["state"] == "ready" else st.warning)(label)
-    if ai["state"] == "ready":
-        st.caption("Последний успешный ответ подтверждён. Новые запросы могут завершиться ошибкой.")
-    elif ai["state"] == "not_configured":
-        st.caption("Работают локальные правила. Диалог с моделью доступен после настройки.")
-    if st.button("Настроить AI", width="stretch"):
-        navigate("Подключение AI")
-    st.divider()
-    st.markdown("**Qala Market · Казахстан**")
-    st.caption("Магазин, правила и начальные обращения вымышлены. Ответы клиентам не отправляются. Время UTC+5.")
+    st.markdown('<div class="brand"><span class="brand-mark">◉</span>SupportLens</div><div class="eyebrow">Рабочее место оператора</div>', unsafe_allow_html=True)
+    for name, key, icon in [("Обращения","tickets","inbox"),("База знаний","knowledge","menu_book"),("Аналитика","analytics","bar_chart"),("Подключение AI","connection","settings_input_component")]:
+        if st.button(name, key="nav_"+key, icon=f":material/{icon}:", type="primary" if st.session_state["nav"] == name else "secondary", width="stretch"):
+            navigate(name)
+    with st.container(key="ai_indicator"):
+        label = {"not_configured":"Деморежим","unverified":"Деморежим","ready":"Подключён","error":"Ошибка подключения"}[ai["state"]]
+        st.markdown(f'<div class="ai-status"><span class="status-dot {ai["state"]}"></span>AI · {label}</div>', unsafe_allow_html=True)
+        st.caption({"not_configured":"Ключ не настроен · локальные правила","unverified":"Подключение ещё не проверено","ready":"Подтверждено реальным ответом модели","error":"Последний запрос не прошёл. Доступен повтор."}[ai["state"]])
+        st.caption("Qala Market · Казахстан\n\nВымышленный магазин. Ответы проверяет оператор; отправка не выполняется.")
+
+section = st.session_state["nav"]
 
 if "flash" in st.session_state:
     st.success(st.session_state.pop("flash"))
 
 
+source_render_count = 0
+
+
 def source_panel(sources, snapshots, compact=True):
+    global source_render_count
+    source_render_count += 1
     catalog = {a["id"]: a for a in snapshots}
     live = {a["id"]: a for a in articles}
     if not sources:
-        st.info("Подходящая инструкция не найдена. Уточните вопрос или передайте специалисту.")
+        st.caption("В этом ответе нет ссылок на правила магазина.")
     for id in dict.fromkeys(s["id"] for s in sources):
         a = catalog.get(id, live.get(id, {}))
         with st.expander(f"{id} · {a.get('title','Источник')} · v{a.get('version',1)}", expanded=not compact):
@@ -90,6 +114,26 @@ def source_panel(sources, snapshots, compact=True):
             for s in sources:
                 if s["id"] == id:
                     st.text(s["quote"])
+            if id in live and st.button("Открыть статью " + id, key=f"source_{source_render_count}_{id}"):
+                st.session_state["pending_kb"] = id
+                navigate("База знаний")
+            if id in live:
+                st.caption(f"[Постоянная ссылка на {id}](?article={id})")
+
+
+def basis_panel(parts, sources=None, snapshots=None, show_text=False):
+    if not parts:
+        parts = [{"kind":"kb" if sources else "check", "explanation":"Сохранённый ответ по источникам." if sources else "Для этой версии нет подтверждённых источников.", "source_ids":list(dict.fromkeys(s["id"] for s in sources or []))}]
+    for part in parts:
+        title = {"kb":"По базе знаний","general":"Общий ответ ИИ","check":"Нужна проверка"}[part["kind"]]
+        explanation = part.get("explanation", "")
+        if part["kind"] == "general":
+            explanation = "Это общее объяснение, не правило компании. " + explanation
+        st.markdown(f'<div class="basis"><strong>{title}</strong><br>{escape(explanation)}</div>', unsafe_allow_html=True)
+        if show_text and part.get("text"):
+            st.write(part["text"])
+    if sources:
+        source_panel(sources, snapshots or [])
 
 
 def rows_table(tickets, key, height=440):
@@ -133,7 +177,7 @@ def assistant_panel(ticket, buffer):
     with st.container(border=True):
         st.subheader("✧ AI-помощник")
         st.caption(f"Контекст только SL-{id:04d}. Предложения применяются по выбору оператора.")
-        enabled = settings.enabled and ai["state"] == "ready"
+        enabled = settings.enabled
         if not enabled:
             st.info("Подключите и проверьте модель, чтобы задавать вопросы и менять ответ с помощью AI.")
             if st.button("Перейти к подключению AI", key=f"setup_{id}", width="stretch"):
@@ -145,10 +189,15 @@ def assistant_panel(ticket, buffer):
             if qcols[index % 2].button(text, key=f"quick_{id}_{index}", disabled=not enabled, width="stretch"):
                 question = text
         with st.form(f"chat_{id}", clear_on_submit=True):
-            free = st.text_input("Вопрос помощнику", placeholder="Спроси о текущем обращении…", disabled=not enabled, max_chars=2000)
+            free = st.text_input("Вопрос помощнику", placeholder="По обращению или общий вопрос, например 2 + 2", disabled=not enabled, max_chars=2000)
             asked = st.form_submit_button("Спросить AI", disabled=not enabled, width="stretch")
         if asked:
             question = free
+        failed = st.session_state.get(f"failed_question_{id}")
+        if failed:
+            st.error(failed["error"])
+            if st.button("Повторить запрос", key=f"retry_{id}", disabled=not enabled):
+                question = failed["question"]
         if question is not None:
             if buffer["text"] != ticket["draft"]:
                 st.warning("Сначала сохраните ручные правки: помощник использует сохранённый черновик.")
@@ -156,9 +205,11 @@ def assistant_panel(ticket, buffer):
                 try:
                     with st.spinner("Модель изучает обращение и источники…"):
                         store.ask_assistant(id, question, settings, expected_revision=ticket["revision"])
+                    st.session_state.pop(f"failed_question_{id}", None)
                     st.rerun()
                 except (AIError, ValueError) as exc:
-                    st.error(str(exc))
+                    st.session_state[f"failed_question_{id}"] = {"question":question,"error":str(exc)}
+                    st.rerun()
         messages = store.conversation(id)
         if messages:
             with st.container(height=330):
@@ -166,8 +217,8 @@ def assistant_panel(ticket, buffer):
                     with st.chat_message(item["role"]):
                         st.write(item["text"])
                         result = item["result"]
-                        if result.get("sources"):
-                            source_panel(result["sources"], result.get("citation_snapshots", []))
+                        if item["role"] == "assistant":
+                            basis_panel(result.get("response_parts", []), result.get("sources", []), result.get("citation_snapshots", []))
                         if result.get("suggestion"):
                             with st.expander("Предложение для клиента", expanded=True):
                                 st.write(result["suggestion"])
@@ -198,6 +249,8 @@ def render_card(ticket):
     with left:
         with st.container(border=True):
             st.subheader("Ответ клиенту")
+            basis_panel(ticket["response_parts"], ticket["sources"], ticket["source_snapshots"])
+            st.caption("Основания относятся к сохранённому варианту. Ручные правки проверяет оператор.")
             if ticket["status"] == "утверждено":
                 st.success("Утверждён " + when(ticket["approved_at"]) + ". Отправка не выполнялась.")
             if buffer["revision"] != ticket["revision"]:
@@ -221,7 +274,7 @@ def render_card(ticket):
             if save_clicked or approve_clicked:
                 try:
                     store.save_draft(id, buffer["text"], approve=approve_clicked, expected_revision=buffer["revision"],
-                                     sources=buffer.get("sources"), snapshots=buffer.get("snapshots"))
+                                     sources=buffer.get("sources"), snapshots=buffer.get("snapshots"), response_parts=buffer.get("response_parts"), question_parts=buffer.get("question_parts"), question_type=buffer.get("question_type"))
                     st.session_state[f"reset_buffer_{id}"] = True
                     flash("Ответ утверждён и сохранён." if approve_clicked else "Черновик сохранён.")
                     st.rerun()
@@ -296,6 +349,9 @@ def render_card(ticket):
                 buffer["text"] = version["answer"]
                 buffer["sources"] = json.loads(version["sources"])
                 buffer["snapshots"] = json.loads(version["snapshots"])
+                buffer["response_parts"] = json.loads(version["response_parts"])
+                buffer["question_parts"] = json.loads(version["question_parts"])
+                buffer["question_type"] = version["question_type"]
                 st.session_state[f"pending_editor_{id}"] = version["answer"]
                 st.rerun()
         for event in store.audit(id)[:15]:
@@ -369,7 +425,7 @@ elif section == "Обращения":
         c1,c2,c3 = st.columns(3)
         c1.metric("В работе", sum(t["status"] != "утверждено" for t in all_tickets))
         c2.metric("Требуют внимания", sum(t["status"] != "утверждено" and t["priority"] in PRIORITIES[:2] for t in all_tickets))
-        c3.metric("Без инструкции", sum(t["mode"] != "pending" and not t["sources"] for t in all_tickets))
+        c3.metric("Без инструкции", sum(t["mode"] != "pending" and not t["sources"] and t["question_type"] != "general" for t in all_tickets))
         a,b,c,d = st.columns([1,1,1,1.3])
         topic = a.selectbox("Тема", ["Все темы", *TOPICS])
         priority = b.selectbox("Приоритет", ["Все приоритеты", *PRIORITIES])
@@ -388,8 +444,11 @@ elif section == "Обращения":
 elif section == "База знаний":
     st.title("База знаний")
     st.caption("Правила вымышленного магазина. При изменении статьи прошлые ответы сохраняют снимки источников.")
-    query = st.text_input("Найти статью", placeholder="Название, текст или KB-003")
-    topic = st.selectbox("Раздел базы", ["Все темы", *TOPICS])
+    if "pending_kb" in st.session_state:
+        st.session_state["kb_search"] = st.session_state.pop("pending_kb")
+        st.session_state["kb_topic"] = "Все темы"
+    query = st.text_input("Найти статью", placeholder="Название, текст или KB-003", key="kb_search")
+    topic = st.selectbox("Раздел базы", ["Все темы", *TOPICS], key="kb_topic")
     for a in articles:
         if (topic == "Все темы" or a["topic"] == topic) and (not query or query.casefold() in (a["id"]+a["title"]+a["body"]).casefold()):
             with st.expander(f"{a['id']} · {a['title']} · v{a['version']}", expanded=bool(query)):

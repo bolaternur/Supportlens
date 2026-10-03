@@ -88,7 +88,8 @@ class APITests(unittest.TestCase):
 
     def classification(self, **changes):
         r = {"topic": "доставка", "priority": "обычный", "topic_reason": "Вопрос о доставке.",
-             "priority_reason": "Нет риска.", "article_ids": ["KB-004"], "language": "ru", "entities": []}
+             "priority_reason": "Нет риска.", "article_ids": ["KB-004"], "language": "ru", "entities": [],
+             "question_parts":[{"kind":"company","text":"","reason":"Правила магазина."}]}
         return {**r, **changes}
 
     def valid_plan(self):

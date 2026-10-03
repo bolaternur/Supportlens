@@ -76,7 +76,9 @@ class Store:
                 "tickets": {"revision": "INTEGER NOT NULL DEFAULT 0", "draft_revision": "INTEGER NOT NULL DEFAULT 0",
                             "language": "TEXT NOT NULL DEFAULT 'ru'", "known_fields": "TEXT NOT NULL DEFAULT '{}'",
                             "operator_notes": "TEXT NOT NULL DEFAULT ''", "error_category": "TEXT NOT NULL DEFAULT ''",
-                            "source_snapshots": "TEXT NOT NULL DEFAULT '[]'", "intake_token": "TEXT"},
+                            "source_snapshots": "TEXT NOT NULL DEFAULT '[]'", "intake_token": "TEXT",
+                            "question_type": "TEXT NOT NULL DEFAULT 'company'", "question_parts": "TEXT NOT NULL DEFAULT '[]'",
+                            "response_parts": "TEXT NOT NULL DEFAULT '[]'"},
                 "articles": {"version": "INTEGER NOT NULL DEFAULT 1"},
             }
             for table, columns in additions.items():
@@ -97,6 +99,10 @@ class Store:
                     role TEXT NOT NULL, text TEXT NOT NULL, result TEXT NOT NULL DEFAULT '{}',
                     base_revision INTEGER NOT NULL);
             """)
+            version_columns = {r["name"] for r in con.execute("PRAGMA table_info(answer_versions)")}
+            for column, default in [("response_parts", "[]"), ("question_parts", "[]"), ("question_type", "company")]:
+                if column not in version_columns:
+                    con.execute(f"ALTER TABLE answer_versions ADD COLUMN {column} TEXT NOT NULL DEFAULT '{default}'")
             for a in ARTICLES:
                 con.execute("INSERT OR IGNORE INTO articles(id,title,topic,summary,body,keywords,fields,action) VALUES (?,?,?,?,?,?,?,?)", (
                     a["id"], a["title"], a["topic"], a["summary"], a["body"],
@@ -129,7 +135,7 @@ class Store:
     def decode(row):
         if row is None:
             return None
-        return {**dict(row), **{key: json.loads(row[key]) for key in ("sources", "missing_fields", "known_fields", "source_snapshots")}}
+        return {**dict(row), **{key: json.loads(row[key]) for key in ("sources", "missing_fields", "known_fields", "source_snapshots", "question_parts", "response_parts")}}
 
     def tickets(self, topic=None, priority=None, status=None, demo=None, start=None, end=None, sort="risk"):
         clauses, args = [], []
@@ -185,8 +191,8 @@ class Store:
     def _version(self, con, id, reason):
         row = self._require(con, id)
         if row["draft"]:
-            con.execute("INSERT INTO answer_versions(ticket_id,created_at,revision,reason,answer,sources,snapshots,status) VALUES (?,?,?,?,?,?,?,?)",
-                        (id, now(), row["revision"], reason, row["draft"], row["sources"], row["source_snapshots"], row["status"]))
+            con.execute("INSERT INTO answer_versions(ticket_id,created_at,revision,reason,answer,sources,snapshots,status,response_parts,question_parts,question_type) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (id, now(), row["revision"], reason, row["draft"], row["sources"], row["source_snapshots"], row["status"], row["response_parts"], row["question_parts"], row["question_type"]))
 
     @staticmethod
     def _require(con, id):
@@ -218,11 +224,11 @@ class Store:
                 self._event(con, id, "analysis_conflict", {"expected_revision": ticket["revision"], "current_revision": current["revision"]})
             else:
                 self._version(con, id, "before_generation")
-                keys = ("topic", "priority", "topic_reason", "priority_reason", "action", "draft", "mode", "error", "elapsed_ms", "ai_ms", "language", "operator_notes", "error_category")
+                keys = ("topic", "priority", "topic_reason", "priority_reason", "action", "draft", "mode", "error", "elapsed_ms", "ai_ms", "language", "operator_notes", "error_category", "question_type")
                 con.execute("UPDATE tickets SET " + ",".join(k + "=?" for k in keys) +
-                            ",sources=?,source_snapshots=?,missing_fields=?,known_fields=?,status=?,updated_at=?,approved_answer=NULL,approved_at=NULL,revision=revision+1,draft_revision=draft_revision+1 WHERE id=? AND revision=?",
+                            ",sources=?,source_snapshots=?,missing_fields=?,known_fields=?,question_parts=?,response_parts=?,status=?,updated_at=?,approved_answer=NULL,approved_at=NULL,revision=revision+1,draft_revision=draft_revision+1 WHERE id=? AND revision=?",
                             (*[result[k] for k in keys], json.dumps(result["sources"], ensure_ascii=False), json.dumps(self._snapshots(result["sources"], articles), ensure_ascii=False),
-                             json.dumps(result["missing_fields"]), json.dumps(result["known_fields"], ensure_ascii=False), suggested_status(result), now(), id, ticket["revision"]))
+                             json.dumps(result["missing_fields"]), json.dumps(result["known_fields"], ensure_ascii=False), json.dumps(result["question_parts"], ensure_ascii=False), json.dumps(result["response_parts"], ensure_ascii=False), suggested_status(result), now(), id, ticket["revision"]))
                 self._version(con, id, "generated")
                 self._event(con, id, "analysis", {"topic": result["topic"], "priority": result["priority"], "mode": result["mode"]})
         if conflict:
@@ -243,7 +249,7 @@ class Store:
             con.execute("UPDATE tickets SET topic=?,priority=?,topic_reason='Тема исправлена оператором.',priority_reason='Приоритет исправлен оператором.',manual_override=1,revision=revision+1,updated_at=? WHERE id=?", (topic, priority, now(), id))
             self._event(con, id, "manual_classification", {"topic": topic, "priority": priority, "answer_preserved": True})
 
-    def save_draft(self, id, answer, approve=False, expected_revision=None, sources=None, snapshots=None, language=None):
+    def save_draft(self, id, answer, approve=False, expected_revision=None, sources=None, snapshots=None, language=None, response_parts=None, question_parts=None, question_type=None):
         if not isinstance(answer, str) or not 1 <= len(answer.strip()) <= 12000:
             raise ValueError("Ответ должен содержать от 1 до 12000 символов.")
         with self.connection() as con:
@@ -258,9 +264,11 @@ class Store:
             self._version(con, id, "before_edit")
             timestamp = now()
             status = "утверждено" if approve else "черновик"
-            con.execute("UPDATE tickets SET draft=?,status=?,approved_answer=?,approved_at=?,updated_at=?,sources=?,source_snapshots=?,language=?,revision=revision+1,draft_revision=draft_revision+1 WHERE id=?",
+            con.execute("UPDATE tickets SET draft=?,status=?,approved_answer=?,approved_at=?,updated_at=?,sources=?,source_snapshots=?,language=?,response_parts=?,question_parts=?,question_type=?,revision=revision+1,draft_revision=draft_revision+1 WHERE id=?",
                         (answer.strip(), status, answer.strip() if approve else None, timestamp if approve else None, timestamp,
-                         json.dumps(chosen_sources, ensure_ascii=False), json.dumps(chosen_snapshots, ensure_ascii=False), language or row["language"], id))
+                         json.dumps(chosen_sources, ensure_ascii=False), json.dumps(chosen_snapshots, ensure_ascii=False), language or row["language"],
+                         json.dumps(response_parts, ensure_ascii=False) if response_parts is not None else row["response_parts"],
+                         json.dumps(question_parts, ensure_ascii=False) if question_parts is not None else row["question_parts"], question_type or row["question_type"], id))
             self._version(con, id, "approved" if approve else "edited")
             self._event(con, id, "approved" if approve else "draft_saved", {"answer": answer.strip()})
 
@@ -328,7 +336,7 @@ class Store:
                 day += timedelta(days=1)
         return dict(total=len(tickets), processed=len(processed), approved=approved,
                     approval_share=approved / len(processed) if processed else 0,
-                    no_instruction=[t for t in processed if not t["sources"]],
+                    no_instruction=[t for t in processed if not t["sources"] and t["question_type"] != "general"],
                     topics={k: sum(t["topic"] == k for t in tickets) for k in TOPICS},
                     priorities={k: sum(t["priority"] == k for t in tickets) for k in PRIORITIES},
                     by_day=dict(sorted(by_day.items())), successful_ai_runs=len(successful_ai),
@@ -395,7 +403,7 @@ class Store:
         result = json.loads(row["result"])
         if not result.get("suggestion"):
             raise ValueError("В этом ответе нет предложения для черновика.")
-        self.save_draft(id, result["suggestion"], expected_revision=expected_revision, sources=result["suggestion_sources"], snapshots=result["snapshots"], language=result["language"])
+        self.save_draft(id, result["suggestion"], expected_revision=expected_revision, sources=result["suggestion_sources"], snapshots=result["snapshots"], language=result["language"], response_parts=result.get("suggestion_parts"))
 
     def save_article(self, id, title, topic, body, keywords, fields, action, expected_version=None):
         if not re.fullmatch(r"KB-[A-Z0-9-]{3,30}", id) or topic not in TOPICS or action not in ("Проверить данные", "Нужно уточнение", "Передать специалисту"):

@@ -15,11 +15,22 @@ from supportlens.storage import ConflictError, Store, LOCAL_TZ
 
 
 def classification(**changes):
-    return dict(topic="доставка", priority="обычный", topic_reason="Доставка.", priority_reason="Справочный вопрос.", language="ru", entities=[], article_ids=["KB-004"]) | changes
+    return dict(topic="доставка", priority="обычный", topic_reason="Доставка.", priority_reason="Справочный вопрос.", language="ru", entities=[], article_ids=["KB-004"],question_parts=[{"kind":"company","text":"","reason":"Правила магазина."}]) | changes
 
 
 def plan(**changes):
     return dict(sources=["KB-004:p2"], segments=[{"text":"Доставка стоит 1500 ₸, от 20000 ₸ — бесплатно.","source_ids":["KB-004"]}], missing_fields=[], operator_notes="Общий вопрос.", action="Проверить данные") | changes
+
+
+def rich_plan():
+    p = plan()
+    p["segments"][0].update(kind="kb", explanation="По статье о доставке.")
+    return p
+
+
+def operator_plan():
+    p = rich_plan()
+    return dict(sources=p["sources"], segments=p["segments"], wants_draft=True, question_type="ticket")
 
 
 class RegressionTests(unittest.TestCase):
@@ -233,9 +244,9 @@ class StorageUpgradeTests(unittest.TestCase):
     def test_conversations_are_isolated_and_apply_is_explicit(self):
         a,b = self.ticket(),self.ticket("Как работает доставка в Астане?")
         before = self.s.ticket(a)
-        response = {"operator_answer":"Можно сократить ответ о стоимости.","sources":["KB-004:p2"]}
-        proposal = plan()
-        transport = Mock(side_effect=[response,proposal,{"supported":True,"reason":"Обоснован."}])
+        response = operator_plan()
+        proposal = rich_plan()
+        transport = Mock(side_effect=[response,{"supported":True,"reason":"Обоснован."},proposal,{"supported":True,"reason":"Обоснован."}])
         self.s.ask_assistant(a,"Сделай ответ короче",Settings("test-key"),before["revision"],transport)
         self.assertEqual(self.s.ticket(a)["draft"],before["draft"])
         self.assertEqual(len(self.s.conversation(a)),2)
@@ -250,8 +261,8 @@ class StorageUpgradeTests(unittest.TestCase):
     def test_stale_chat_proposal_cannot_replace_approved_answer(self):
         id = self.ticket()
         before = self.s.ticket(id)
-        response = {"operator_answer":"Предложение.","sources":["KB-004:p2"]}
-        self.s.ask_assistant(id,"Сократи",Settings("test-key"),before["revision"],Mock(side_effect=[response,plan(),{"supported":True,"reason":"Обоснован."}]))
+        response = operator_plan()
+        self.s.ask_assistant(id,"Сократи",Settings("test-key"),before["revision"],Mock(side_effect=[response,{"supported":True,"reason":"Обоснован."},rich_plan(),{"supported":True,"reason":"Обоснован."}]))
         proposal = self.s.conversation(id)[-1]
         self.s.save_draft(id,"Утверждённый ответ",approve=True,expected_revision=before["revision"])
         with self.assertRaises(ConflictError):
