@@ -44,12 +44,13 @@ class UITests(unittest.TestCase):
         self.assertEqual(self.app.metric[0].value, "0")
 
     def test_new_ticket_edit_approve_and_dashboard(self):
+        self.element("button", "＋ Новое обращение").click().run()
         self.element("text_area", "Сообщение клиента").set_value("Деньги списали два раза за заказ 7731.")
         self.element("button", "Добавить и обработать").click().run()
         self.assert_no_errors()
-        t = Store(self.db).tickets()[0]
+        t = Store(self.db).tickets(sort="new")[0]
         self.assertEqual(t["priority"], "высокий")
-        self.assertEqual(self.element("selectbox", "Открыть карточку").value, t["id"])
+        self.assertEqual(self.app.session_state["ticket_id"], t["id"])
         answer = self.element("text_area", "Редактируемый ответ").value + "\n\nУточните даты обеих операций."
         self.element("text_area", "Редактируемый ответ").set_value(answer)
         self.element("button", "Утвердить ответ").click().run()
@@ -64,6 +65,9 @@ class UITests(unittest.TestCase):
         self.assertEqual(self.app.metric[2].value, "100.0%")
         # A fresh Streamlit session reads the saved answer without adding demo data.
         self.app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60).run()
+        self.app.session_state["ticket_id"] = t["id"]
+        self.app.session_state["view"] = "card"
+        self.app.run()
         self.assert_no_errors()
         self.assertEqual(Store(self.db).metrics()["total"], 51)
         self.assertEqual(self.element("text_area", "Редактируемый ответ").value, answer)
@@ -72,7 +76,10 @@ class UITests(unittest.TestCase):
         self.element("selectbox", "Тема").set_value("аккаунт").run()
         self.element("selectbox", "Приоритет").set_value("критический").run()
         self.assert_no_errors()
-        selected = self.element("selectbox", "Открыть карточку").value
+        selected = Store(self.db).tickets(topic="аккаунт", priority="критический")[0]["id"]
+        self.app.session_state["ticket_id"] = selected
+        self.app.session_state["view"] = "card"
+        self.app.run()
         self.assertEqual(Store(self.db).ticket(selected)["topic"], "аккаунт")
         self.element("selectbox", "Тема обращения").set_value("другое")
         self.element("selectbox", "Приоритет обращения").set_value("обычный")
@@ -80,6 +87,38 @@ class UITests(unittest.TestCase):
         self.assert_no_errors()
         t = Store(self.db).ticket(selected)
         self.assertEqual((t["topic"], t["priority"], t["manual_override"]), ("другое", "обычный", 1))
+
+    def test_unsaved_text_survives_navigation_and_manual_correction(self):
+        id = Store(self.db).tickets()[0]["id"]
+        self.app.session_state["ticket_id"] = id
+        self.app.session_state["view"] = "card"
+        self.app.run()
+        original = Store(self.db).ticket(id)["draft"]
+        text = original + "\nРучная правка, пока не сохранённая."
+        self.element("text_area","Редактируемый ответ").set_value(text).run()
+        self.element("selectbox","Тема обращения").set_value("другое")
+        self.element("button","Применить исправление").click().run()
+        self.assertEqual(self.element("text_area","Редактируемый ответ").value,text)
+        self.app.sidebar.radio[0].set_value("База знаний").run()
+        self.app.sidebar.radio[0].set_value("Обращения").run()
+        self.element("selectbox","Тема").set_value("оплата").run()
+        self.app.session_state["view"] = "card"
+        self.app.run()
+        self.assert_no_errors()
+        self.assertEqual(self.element("text_area","Редактируемый ответ").value,text)
+        self.assertEqual(Store(self.db).ticket(id)["draft"],original)
+
+    def test_new_ticket_opens_even_when_queue_filters_exclude_it(self):
+        self.element("selectbox","Тема").set_value("аккаунт").run()
+        self.element("selectbox","Приоритет").set_value("критический").run()
+        self.element("button","＋ Новое обращение").click().run()
+        self.element("text_area","Сообщение клиента").set_value("Сколько стоит доставка в Алматы?")
+        self.element("button","Добавить и обработать").click().run()
+        self.assert_no_errors()
+        t = Store(self.db).tickets(sort="new")[0]
+        self.assertEqual(t["topic"],"доставка")
+        self.assertEqual(self.app.session_state["ticket_id"],t["id"])
+        self.assertEqual(self.app.session_state["view"],"card")
 
 
 if __name__ == "__main__":

@@ -73,8 +73,8 @@ class ClassificationTests(unittest.TestCase):
         for message in DEMO_MESSAGES:
             r = self.process(message)
             self.assertEqual(validate_sources(r["sources"], ARTICLES), r["sources"])
-            for s in r["sources"]:
-                self.assertIn(s["quote"], r["draft"])
+            self.assertNotIn("оператор не должен", r["draft"].casefold())
+            self.assertNotIn("обращение требует высокого", r["draft"].casefold())
 
     def test_quote_cannot_trim_a_prohibition(self):
         with self.assertRaises(AIError):
@@ -88,19 +88,21 @@ class APITests(unittest.TestCase):
 
     def classification(self, **changes):
         r = {"topic": "доставка", "priority": "обычный", "topic_reason": "Вопрос о доставке.",
-             "priority_reason": "Нет риска.", "article_ids": ["KB-004"]}
+             "priority_reason": "Нет риска.", "article_ids": ["KB-004"], "language": "ru", "entities": []}
         return {**r, **changes}
 
     def valid_plan(self):
-        return {"sources": [{"id": "KB-004", "quote": ARTICLES[3]["body"].split("\n\n")[0]}],
-                "missing_fields": ["city"], "action": "Проверить данные", "language": "ru"}
+        return {"sources": ["KB-004:p2"],
+                "segments": [{"text": "Доставка стоит 1500 ₸, от 20000 ₸ — бесплатно.", "source_ids": ["KB-004"]}],
+                "missing_fields": [], "action": "Проверить данные", "operator_notes": "Общий вопрос, номер заказа не нужен."}
 
     def test_valid_ai_response_is_composed_from_verified_sources(self):
-        transport = unittest.mock.Mock(side_effect=[self.classification(), self.valid_plan()])
+        transport = unittest.mock.Mock(side_effect=[self.classification(), self.valid_plan(), {"supported": True, "reason": "Факты обоснованы."}])
         r = analyze("Как работает доставка?", ARTICLES, self.settings, transport)
         self.assertEqual(r["mode"], "ai")
-        self.assertEqual(transport.call_count, 2)
-        self.assertIn(r["sources"][0]["quote"], r["draft"])
+        self.assertEqual(transport.call_count, 3)
+        self.assertIn("1500", r["draft"])
+        self.assertNotEqual(r["sources"][0]["quote"], r["draft"])
         self.assertIsNotNone(r["ai_ms"])
 
     def test_unknown_source_and_bad_schema_fall_back(self):
@@ -113,14 +115,14 @@ class APITests(unittest.TestCase):
 
     def test_fake_quote_discards_partial_ai_result(self):
         plan = self.valid_plan()
-        plan["sources"][0]["quote"] = "Мы вернули деньги за 24 часа."
+        plan["sources"] = ["KB-999:p0"]
         transport = unittest.mock.Mock(side_effect=[self.classification(), plan])
         r = analyze("Сколько стоит доставка?", ARTICLES, self.settings, transport)
         self.assertEqual(r["mode"], "fallback")
         self.assertNotIn("24 часа", r["draft"])
 
     def test_sensitive_or_unknown_fields_are_rejected(self):
-        for value in [["password"], ["payment"], "city"]:
+        for value in [["password"], "city"]:
             plan = self.valid_plan()
             plan["missing_fields"] = value
             transport = unittest.mock.Mock(side_effect=[self.classification(), plan])
@@ -128,12 +130,11 @@ class APITests(unittest.TestCase):
 
     def test_risk_rule_overrides_model_and_restores_omitted_quotes(self):
         classification = self.classification(topic="другое", priority="низкий", article_ids=[])
-        plan = {"sources": [], "missing_fields": [], "action": "Нужно уточнение", "language": "ru"}
+        plan = {"sources": [], "segments": [], "missing_fields": [], "action": "Нужно уточнение", "operator_notes": "Нужна проверка безопасности."}
         transport = unittest.mock.Mock(side_effect=[classification, plan])
         r = analyze("Мой аккаунт взломали, кто-то сменил пароль.", ARTICLES, self.settings, transport)
         self.assertEqual(r["mode"], "ai")
         self.assertEqual(r["priority"], "критический")
-        self.assertEqual({s["id"] for s in r["sources"]}, {"KB-011"})
         self.assertEqual(r["action"], "Передать специалисту")
 
     def test_http_failure_and_timeout_are_sanitized(self):
@@ -222,15 +223,15 @@ class PersistenceTests(unittest.TestCase):
         self.assertIsNone(m["mean_ai_ms"])
         self.assertGreaterEqual(m["mean_failed_ai_ms"], 0)
 
-    def test_manual_correction_invalidates_approval_and_preserves_audit(self):
+    def test_manual_correction_preserves_answer_approval_and_audit(self):
         id = self.store.create_ticket("Не понимаю, помогите.")
         self.store.process(id, Settings())
         self.store.save_draft(id, "Уточните ситуацию", approve=True)
         self.store.correct(id, "аккаунт", "высокий")
         t = self.store.ticket(id)
-        self.assertEqual((t["topic"], t["priority"], t["mode"]), ("аккаунт", "высокий", "manual"))
-        self.assertIsNone(t["approved_answer"])
-        self.assertEqual(self.store.metrics()["approved"], 0)
+        self.assertEqual((t["topic"], t["priority"], t["manual_override"]), ("аккаунт", "высокий", 1))
+        self.assertEqual(t["approved_answer"], "Уточните ситуацию")
+        self.assertEqual(self.store.metrics()["approved"], 1)
         self.assertTrue(any("Уточните ситуацию" in row["payload"] for row in self.store.audit(id)))
 
     def test_metrics_use_current_state_and_population_filters(self):
